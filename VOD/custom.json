@@ -1,8 +1,10 @@
-[
-  {
-    "name": "999TV·连续剧",
-    "type": 3,
-    "api": "csp_999tv_drama",
-    "ext": "https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/999tv.js"
-  }
-]
+{
+  "sites": [
+    {
+      "name": "999TV·连续剧",
+      "type": 3,
+      "api": "csp_999tv_drama",
+      "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/999tv.js"
+    }
+  ]
+}
