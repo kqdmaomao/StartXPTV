@@ -5,7 +5,7 @@
   "name": "热播APP",
   "type": 3,
   "api": "xptv_rbotv_apprj",
-  "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/xptv_rbotv_apprj.js"
+  "ext": "http://192.168.10.213:8000/xptv_rbotv_apprj.js"
 }
   ]
   
