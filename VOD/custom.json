@@ -5,7 +5,7 @@
       "name": "【自检】HELLO",
       "type": 3,
       "api": "xptv_hello",
-      "ext": "file:////Users/star/StartXPTV/js/xptv_hello.js"
+      "ext": "file:///Users/star/StartXPTV/js/xptv_hello.js"
     }
   ]
 }
