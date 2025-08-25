@@ -37,7 +37,7 @@ async function getConfig() {
   return jsonify({
     ver: 20250825,
     title: '热播APP',
-    site: BASE,
+    site: 'http://v.rbotv.cn',
     tabs: [
       { name: '电影',   ext: { catId: 1, page: 1 } },
       { name: '电视剧', ext: { catId: 2, page: 1 } },
