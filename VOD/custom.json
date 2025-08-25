@@ -2,10 +2,10 @@
   "sites": [
     {
       "key": "hello_demo",
-      "name": "【自检】HELLO",
+      "name": "HELLO",
       "type": 3,
       "api": "xptv_hello",
-      "ext": "file:///Users/star/StartXPTV/js/xptv_hello.js"
+      "ext": "http://192.168.10.213:8000/js/xptv_hello.js"
     }
   ]
 }
