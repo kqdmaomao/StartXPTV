@@ -223,50 +223,115 @@ async function getPlayinfo(ext) {
   if (!id) {
     $utils.toastError('缺少播放参数');
     $print(`[playinfo] missing id`);
-    return jsonify({ urls: [], headers: [withHeaders()] });
+    return jsonify({ urls: [], headers: [{ 'User-Agent': UA, 'Referer': BASE, 'Origin': BASE }] });
   }
 
   const playUrl = `${BASE}/index.php/vod/play/id/${id}/sid/${sid}/nid/${nid}.html`;
-  const baseHeaders = withHeaders();
+  const baseHeaders = { 'User-Agent': UA, 'Referer': BASE, 'Origin': BASE };
   $print(`[playinfo] start id=${id} sid=${sid} nid=${nid} url=${playUrl}`);
 
-  // STEP 0: 拉播放页
+  // 工具：JS对象文本清洗 → 尽量转成 JSON 可解析
+  function sanitizeJSObject(txt) {
+    let t = String(txt || '');
+    // 去多行/单行注释
+    t = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n\r]*/g, '');
+    // 未引号 key → 补双引号
+    t = t.replace(/(['"])?([a-zA-Z0-9_]+)\1\s*:/g, '"$2":');
+    // undefined → null
+    t = t.replace(/:\s*undefined/g, ':null');
+    // 尾逗号
+    t = t.replace(/,\s*([}\]])/g, '$1');
+    // 单引号→双引号
+    t = t.replace(/'/g, '"');
+    return t;
+  }
+  function maybeDecode(u) {
+    if (!u) return '';
+    let s = u;
+    try { s = decodeURIComponent(s); } catch {}
+    try {
+      // base64 试一下（只对“看起来像 base64”的值尝试）
+      if (/^[A-Za-z0-9+/=]+$/.test(s) && s.length % 4 === 0) {
+        const d = $utils.base64Decode(s);
+        if (d) s = d;
+      }
+    } catch {}
+    return s;
+  }
+  function fixUrl(u, referer = BASE) {
+    if (!u) return '';
+    let x = u.replace(/\\\//g, '/'); // 还原 JSON 里的 \/ 转义
+    x = maybeDecode(x);
+    if (/^https?:\/\//i.test(x)) return x;
+    if (x.startsWith('//')) return 'https:' + x;
+    if (x.startsWith('/')) return BASE + x;
+    // 其它相对路径：挂到 referer 域名下
+    const host = (referer.match(/^https?:\/\/[^/]+/i) || [BASE])[0];
+    return host + (x.startsWith('/') ? '' : '/') + x.replace(/^\.\//, '');
+  }
+  function extractUrlFromPlayerBlock(block) {
+    // 直接正则抓 url/link 字段
+    const m1 = block.match(/(?:url|link|playurl)\s*:\s*["']([^"']+)["']/i);
+    if (m1 && m1[1]) return m1[1];
+    // 有些写成 "url":"...."（双引号键）
+    const m2 = block.match(/"url"\s*:\s*"([^"]+)"/i) || block.match(/"link"\s*:\s*"([^"]+)"/i);
+    return (m2 && m2[1]) || '';
+  }
+
+  // 拉取播放页
   const r0 = await safeGet(playUrl, baseHeaders);
   const html0 = r0?.data || '';
-  $print(`[playinfo] page0 status=${r0?.status} hasM3U8=${hasM3U8(html0)}`);
+  $print(`[playinfo] page0 status=${r0?.status}`);
 
-  // STEP 1: 直接命中 m3u8
-  if (hasM3U8(html0)) {
-    const m3u8 = pickM3U8(html0);
+  // 1) 直接搜 m3u8
+  if (/https?:\/\/[^\s'"<>]+\.m3u8[^\s'"<>]*/i.test(html0)) {
+    const m3u8 = (html0.match(/https?:\/\/[^\s'"<>]+\.m3u8[^\s'"<>]*/i) || [])[0];
     $print(`[playinfo] m3u8@page0 ${m3u8}`);
     return jsonify({ urls: [m3u8], headers: [baseHeaders] });
   }
 
-  // STEP 2: player JSON
-  let pjsonText = firstMatch(/player_[a-zA-Z0-9_]+\s*=\s*(\{[\s\S]*?\});/i, html0)
-               || firstMatch(/player\s*=\s*(\{[\s\S]*?\});/i, html0)
-               || '';
-  $print(`[playinfo] hasPlayerJSON=${!!pjsonText}`);
-  if (pjsonText) {
-    const pobj = tryJSONRecover(pjsonText);
-    $print(`[playinfo] playerJSON parsed=${!!pobj}`);
+  // 2) player 段落：尽量解析成对象；失败则用正则抓字段
+  let playerBlock = (html0.match(/player_[a-zA-Z0-9_]+\s*=\s*(\{[\s\S]*?\});/i) || [])[1]
+                 || (html0.match(/player\s*=\s*(\{[\s\S]*?\});/i) || [])[1]
+                 || '';
+  $print(`[playinfo] hasPlayerBlock=${!!playerBlock}`);
+  if (playerBlock) {
+    let pobj = null, raw = playerBlock;
+    // 先尝试清洗后 JSON.parse
+    try {
+      const clean = sanitizeJSObject(playerBlock);
+      pobj = JSON.parse(clean);
+      $print(`[playinfo] playerJSON parsed=true`);
+    } catch (e) {
+      $print(`player json parse error (after sanitize): ${e}`);
+    }
+
+    // 取 url 值
+    let found = '';
     if (pobj) {
-      let url = pobj.url || pobj.link || pobj.playurl || '';
-      $print(`[playinfo] player.url(raw)=${url}`);
-      if (!/^https?:\/\//i.test(url)) {
-        const u1 = maybeDecodeUrl(url || '');
-        const u2 = b64maybe(url) || b64maybe(u1) || '';
-        url = /^https?:\/\//i.test(u2) ? u2 : (/^https?:\/\//i.test(u1) ? u1 : url);
-        $print(`[playinfo] player.url(decoded)=${url}`);
-      }
-      if (url) {
-        return jsonify({ urls: [url], headers: [baseHeaders] });
-      }
+      found = pobj.url || pobj.link || pobj.playurl || '';
+      $print(`[playinfo] player.url(raw)=${found}`);
+      // MacCMS 常见：encrypt=1/2 对 url 做了编码
+      const enc = String(pobj.encrypt ?? pobj.encrypted ?? '');
+      if (found && enc) $print(`[playinfo] encrypt=${enc}`);
+    }
+
+    // 如果对象解析失败或没取到，就直接在块里用正则抓字段
+    if (!found) {
+      found = extractUrlFromPlayerBlock(raw);
+      $print(`[playinfo] player.url(extracted)=${found}`);
+    }
+
+    // decode & 归一化
+    if (found) {
+      const final = fixUrl(found, playUrl);
+      $print(`[playinfo] player.url(final)=${final}`);
+      return jsonify({ urls: [final], headers: [baseHeaders] });
     }
   }
 
-  // STEP 3: iframe 二跳
-  let iframeSrc = firstMatch(/<iframe[^>]+src=["']([^"']+)["']/i, html0) || '';
+  // 3) iframe 二跳
+  let iframeSrc = (html0.match(/<iframe[^>]+src=["']([^"']+)["']/i) || [])[1] || '';
   $print(`[playinfo] iframe0=${iframeSrc}`);
   if (iframeSrc) {
     if (!/^https?:\/\//i.test(iframeSrc)) {
@@ -275,39 +340,45 @@ async function getPlayinfo(ext) {
       else iframeSrc = BASE + '/' + iframeSrc.replace(/^\.\//, '');
     }
     const host = (iframeSrc.match(/^https?:\/\/[^/]+/i) || [BASE])[0];
-    const hdr = withHeaders({ Referer: playUrl, Origin: host });
+    const hdr = { ...baseHeaders, Referer: playUrl, Origin: host };
+
     const r1 = await safeGet(iframeSrc, hdr);
     const html1 = r1?.data || '';
-    $print(`[playinfo] page1 status=${r1?.status} hasM3U8=${hasM3U8(html1)}`);
+    $print(`[playinfo] page1 status=${r1?.status}`);
 
-    if (hasM3U8(html1)) {
-      const m3u8_1 = pickM3U8(html1);
+    if (/https?:\/\/[^\s'"<>]+\.m3u8[^\s'"<>]*/i.test(html1)) {
+      const m3u8_1 = (html1.match(/https?:\/\/[^\s'"<>]+\.m3u8[^\s'"<>]*/i) || [])[0];
       $print(`[playinfo] m3u8@page1 ${m3u8_1}`);
       return jsonify({ urls: [m3u8_1], headers: [hdr] });
     }
 
-    // player JSON at page1
-    let p2 = firstMatch(/player_[a-zA-Z0-9_]+\s*=\s*(\{[\s\S]*?\});/i, html1)
-          || firstMatch(/player\s*=\s*(\{[\s\S]*?\});/i, html1) || '';
-    $print(`[playinfo] hasPlayerJSON@page1=${!!p2}`);
+    // page1 的 player
+    let p2 = (html1.match(/player_[a-zA-Z0-9_]+\s*=\s*(\{[\s\S]*?\});/i) || [])[1]
+          || (html1.match(/player\s*=\s*(\{[\s\S]*?\});/i) || [])[1] || '';
+    $print(`[playinfo] hasPlayerBlock@page1=${!!p2}`);
     if (p2) {
-      const pobj2 = tryJSONRecover(p2);
-      $print(`[playinfo] playerJSON@page1 parsed=${!!pobj2}`);
-      if (pobj2 && (pobj2.url || pobj2.link || pobj2.playurl)) {
-        let url2 = pobj2.url || pobj2.link || pobj2.playurl;
-        $print(`[playinfo] player@page1.url(raw)=${url2}`);
-        if (!/^https?:\/\//i.test(url2)) {
-          const u1 = maybeDecodeUrl(url2 || '');
-          const u2 = b64maybe(url2) || b64maybe(u1) || '';
-          url2 = /^https?:\/\//i.test(u2) ? u2 : (/^https?:\/\//i.test(u1) ? u1 : url2);
-          $print(`[playinfo] player@page1.url(decoded)=${url2}`);
-        }
-        if (url2) return jsonify({ urls: [url2], headers: [hdr] });
+      let pobj2 = null, raw2 = p2;
+      try {
+        const clean2 = sanitizeJSObject(p2);
+        pobj2 = JSON.parse(clean2);
+        $print(`[playinfo] playerJSON@page1 parsed=true`);
+      } catch (e) {
+        $print(`player json parse error@page1 (after sanitize): ${e}`);
+      }
+      let found2 = pobj2 ? (pobj2.url || pobj2.link || pobj2.playurl || '') : '';
+      if (!found2) {
+        found2 = extractUrlFromPlayerBlock(raw2);
+        $print(`[playinfo] player@page1.url(extracted)=${found2}`);
+      }
+      if (found2) {
+        const final2 = fixUrl(found2, iframeSrc);
+        $print(`[playinfo] player@page1.url(final)=${final2}`);
+        return jsonify({ urls: [final2], headers: [hdr] });
       }
     }
 
-    // iframe 套娃
-    const iframe2 = firstMatch(/<iframe[^>]+src=["']([^"']+)["']/i, html1) || '';
+    // iframe 套娃兜底
+    const iframe2 = (html1.match(/<iframe[^>]+src=["']([^"']+)["']/i) || [])[1] || '';
     $print(`[playinfo] iframe1=${iframe2}`);
     if (iframe2) {
       let u3 = iframe2;
@@ -320,77 +391,15 @@ async function getPlayinfo(ext) {
     }
   }
 
-  // STEP 4: 常见解析器 api.php?url=
-  const parserUrl = firstMatch(/https?:\/\/[^\s'"<>]+api\.php\?[^"'<>]+/i, html0);
+  // 4) 常见解析器
+  const parserUrl = (html0.match(/https?:\/\/[^\s'"<>]+api\.php\?[^"'<>]+/i) || [])[0] || '';
   $print(`[playinfo] parser@page0=${parserUrl}`);
   if (parserUrl) {
     return jsonify({ urls: [parserUrl], headers: [baseHeaders] });
   }
 
-  // STEP 5: 兜底返回播放页（交给播放器嗅探）
+  // 5) 兜底
   $utils.toastError('未解析到直链，回退到嗅探');
   $print(`[playinfo] fallback -> playUrl`);
   return jsonify({ urls: [playUrl], headers: [baseHeaders] });
 }
-
-async function search(ext) {
-  ext = argsify(ext);
-  let { wd = '', page = 1 } = ext;
-  wd = (wd || '').trim();
-  if (!wd) {
-    $print(`[search] empty keyword`);
-    return jsonify({ list: [] });
-  }
-
-  const url = `${BASE}/index.php/vod/search.html${page > 1 ? `?page=${page}` : ''}`;
-  const headers = withHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' });
-  const body = `wd=${encodeURIComponent(wd)}&submit=search`;
-
-  $print(`[search] wd="${wd}" page=${page} url=${url}`);
-  const { data, status } = await safePost(url, body, headers);
-  if (status !== 200) {
-    $utils.toastError('搜索失败');
-    $print(`[search] FAIL status=${status}`);
-    return jsonify({ list: [] });
-  }
-
-  const $ = cheerio.load(data);
-  const list = [];
-
-  $('a').each((_, a) => {
-    const $a = $(a);
-    const href = $a.attr('href') || '';
-    if (!/\/index\.php\/vod\/detail\/id\/\d+\.html$/.test(href)) return;
-
-    const name = ($a.attr('title') || $a.text() || '').trim().replace(/\s+/g, ' ');
-    let pic = $a.find('img').attr('src')
-            || $a.closest('li,div,section,article').find('img').first().attr('src')
-            || '';
-    pic = abs(pic);
-
-    const idm = href.match(/\/id\/(\d+)\.html$/);
-    const vid = idm ? idm[1] : href;
-    const remarks = ($a.text().match(/(第[\d\-]+集.*|完结|豆瓣:\s*\d+(\.\d+)?分)/g) || []).join(' ').trim();
-
-    list.push({
-      vod_id: vid,
-      vod_name: name || '未命名',
-      vod_pic: pic || '',
-      vod_remarks: remarks || '',
-      ext: { id: vid }
-    });
-  });
-
-  // 去重
-  const seen = new Set();
-  const uniq = list.filter(it => {
-    if (seen.has(it.vod_id)) return false;
-    seen.add(it.vod_id);
-    return true;
-  });
-
-  $print(`[search] results=${uniq.length}`);
-  return jsonify({ list: uniq });
-}
-
-module.exports = { getConfig, getCards, getTracks, getPlayinfo, search };
