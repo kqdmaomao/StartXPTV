@@ -102,16 +102,16 @@ function splitPlayFromUrl(vod) {
 /* ---------------- 必要的 5 个接口 ---------------- */
 
 async function getConfig() {
-  await ensureActive();
+  // 不做任何网络探测，保证源一定显示出来
   return jsonify({
     ver: 20250825,
     title: '热播｜APP',
-    site: BASE,
+    site: 'http://v.rbotv.cn',
     tabs: [
-      { name: '电影', ext: { catId: 1, page: 1 } },
+      { name: '电影',   ext: { catId: 1, page: 1 } },
       { name: '电视剧', ext: { catId: 2, page: 1 } },
-      { name: '综艺', ext: { catId: 3, page: 1 } },
-      { name: '动漫', ext: { catId: 4, page: 1 } }
+      { name: '综艺',   ext: { catId: 3, page: 1 } },
+      { name: '动漫',   ext: { catId: 4, page: 1 } }
     ]
   });
 }
