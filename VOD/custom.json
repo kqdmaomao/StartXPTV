@@ -1,13 +1,11 @@
 {
   "sites": [
-
-  {
-    "name": "热播｜APP",
-    "type": 3,
-    "api": "xptv_rbotv_apprj",
-    "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/xptv_rbotv_apprj.js"
-  }
-
+    {
+      "key": "hello_demo",
+      "name": "【自检】HELLO",
+      "type": 3,
+      "api": "xptv_hello",
+      "ext": "file:////Users/star/StartXPTV/js/xptv_hello.js"
+    }
   ]
-  
 }
