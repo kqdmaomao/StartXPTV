@@ -1,11 +1,12 @@
 {
   "sites": [
-    {
-      "key": "hello_demo",
-      "name": "HELLO",
-      "type": 3,
-      "api": "xptv_hello",
-      "ext": "http://192.168.10.213:8000/js/xptv_hello.js"
-    }
+{
+  "key": "rbotv_apprj",
+  "name": "热播APP",
+  "type": 3,
+  "api": "xptv_rbotv_apprj",
+  "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/xptv_rbotv_apprj.js"
+}
   ]
+  
 }
