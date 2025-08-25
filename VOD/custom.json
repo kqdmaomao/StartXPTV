@@ -5,6 +5,14 @@
       "type": 3,
       "api": "csp_999tv_drama",
       "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/999tv.js"
-    }
+    },
+  {
+    "name": "热播｜APP",
+    "type": 3,
+    "api": "xptv_rbotv_apprj",
+    "ext": "https://你的域名/路径/xptv_rbotv_apprj.js"
+  }
+
   ]
+  
 }
