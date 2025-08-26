@@ -1,12 +1,11 @@
 {
   "sites": [
-{
-  "key": "rbotv_apprj",
-  "name": "热播APP",
-  "type": 3,
-  "api": "xptv_rbotv_apprj",
-  "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/xptv_rbotv_apprj.js"
-}
+    {
+      "name": "999TV·连续剧",
+      "type": 3,
+      "api": "csp_999tv_drama",
+      "ext": "https://ghp.xptvhelper.link/https://raw.githubusercontent.com/kqdmaomao/StartXPTV/main/js/999tv.js"
+    }
   ]
   
 }
