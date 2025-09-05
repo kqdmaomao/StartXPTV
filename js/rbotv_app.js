@@ -1,15 +1,15 @@
-// rbotv_app.js —— XPTV csp_xiaohys 规范（异步 + jsonify + argsify）
-// 已接：getConfig / getCards -> v.rbotv.cn 多路径探测
-// 待接：getTracks / getPlayinfo / search（保持演示，不转圈）
+// rbotv_app.js —— 离线优先 + 时间盒探测（async + jsonify + argsify；绝不停留转圈）
+
+/* ====== 开关：先离线运行，确认稳定后你再改 true 测真接口 ====== */
+const NET_ENABLED = false;        // 改成 true 才会尝试联网探测
+const NET_TIMEOUT_MS = 1200;      // 每个探测的硬超时（毫秒）
 
 /* ================== 基础工具 ================== */
 
-// jsonify 兜底：有内置 jsonify 就用；没有就 JSON.stringify
 const __jsonify = (typeof jsonify === 'function')
   ? jsonify
   : (o => { try { return JSON.stringify(o); } catch(e){ return '{}'; } });
 
-// 安全把 ext 解析成对象：有 argsify 就用；没有就尽力转
 function __argsify(x){
   try{
     if (typeof argsify === 'function') return argsify(x);
@@ -17,7 +17,6 @@ function __argsify(x){
     if (typeof x === 'object') return x;
     if (typeof x === 'string') {
       try { return JSON.parse(x); } catch(e){}
-      // 兼容 #@{...}
       const hash = x.split('#@').pop();
       if (hash && (hash.trim().startsWith('{') || hash.trim().startsWith('%7B'))){
         try { return JSON.parse(decodeURIComponent(hash)); }catch(e){}
@@ -27,7 +26,6 @@ function __argsify(x){
   return {};
 }
 
-// 统一 headers
 function __H(extra){
   const base = {
     'User-Agent': 'Mozilla/5.0',
@@ -37,24 +35,33 @@ function __H(extra){
   return base;
 }
 
-// 取文本
+function __timeout(ms){
+  return new Promise(resolve => setTimeout(() => resolve({ __timeout__: true }), ms));
+}
+
 async function __get(u){
+  if (!NET_ENABLED) return '';
   try{
-    // 大多数 xiaohys 内核都提供 $fetch.get/$.get 之类，这里优先 $fetch
     if (typeof $fetch !== 'undefined' && $fetch && $fetch.get){
-      const r = await $fetch.get(u, { headers: __H(), timeout: 10000 });
+      const r = await Promise.race([
+        $fetch.get(u, { headers: __H(), timeout: NET_TIMEOUT_MS }),
+        __timeout(NET_TIMEOUT_MS)
+      ]);
+      if (r && r.__timeout__) return '';
       return (r && (r.data || r.content || r.body)) || '';
     }
-    // 兜底：如果环境有 fetch（少数环境）
     if (typeof fetch === 'function'){
-      const r = await fetch(u, { headers: __H() });
+      const r = await Promise.race([
+        fetch(u, { headers: __H() }),
+        __timeout(NET_TIMEOUT_MS)
+      ]);
+      if (!r || r.__timeout__) return '';
       return await r.text();
     }
   }catch(e){}
   return '';
 }
 
-// 取 JSON
 async function __getJSON(u){
   const txt = await __get(u);
   if (!txt) return null;
@@ -62,8 +69,8 @@ async function __getJSON(u){
   return null;
 }
 
-// 多路径探测（第一个能返回 JSON 的为准）
 async function __probeJSON(bases, rels){
+  if (!NET_ENABLED) return { base: '', url: '', json: null, tried: [] };
   const tried = [];
   for (let i=0;i<bases.length;i++){
     for (let k=0;k<rels.length;k++){
@@ -71,19 +78,13 @@ async function __probeJSON(bases, rels){
       tried.push(u);
       const j = await __getJSON(u);
       if (j && (Array.isArray(j) || typeof j === 'object')){
-        return { base: bases[i], url: u, json: j };
+        return { base: bases[i], url: u, json: j, tried };
       }
     }
   }
   return { base: '', url: '', json: null, tried };
 }
 
-// 标准化分类/列表字段
-function __asArray(v){
-  if (Array.isArray(v)) return v;
-  if (v && typeof v === 'object') return [v];
-  return [];
-}
 function __pick(a){ return Array.isArray(a) ? a : []; }
 function __normVodItem(it){
   return {
@@ -94,12 +95,9 @@ function __normVodItem(it){
   };
 }
 
-/* ================== 入口：getConfig（已接） ================== */
+/* ================== getConfig（离线优先 + 限时探测） ================== */
 async function getConfig(){
-  // 允许 http/https 两种
   const BASES = ['http://v.rbotv.cn', 'https://v.rbotv.cn'];
-
-  // 常见 APP 分类接口路径（不同面板/程序改名较多，逐个试）
   const navRel = [
     '/xgapp.php/v3/nav',
     '/xgapp.php/v2/nav',
@@ -113,28 +111,27 @@ async function getConfig(){
   let tabs = [];
   let base = BASES[0];
 
-  try{
-    const hit = await __probeJSON(BASES, navRel);
-    if (hit.json){
-      base = hit.base || base;
-
-      // 兼容多种字段结构
-      const group = hit.json['class'] || hit.json['data'] || hit.json['list'] || [];
-      const arr = __pick(group);
-      for (let i=0;i<arr.length;i++){
-        const c = arr[i];
-        const id   = c.type_id || c.typeid || c.id || c.tid;
-        const name = c.type_name || c.typename || c.name || c.title;
-        if (id && name){
-          tabs.push({ name: String(name), ext: { catId: String(id), page: 1 } });
+  // 仅当 NET_ENABLED=true 时尝试联网，且时间盒保护
+  if (NET_ENABLED){
+    try{
+      const hit = await __probeJSON(BASES, navRel);
+      if (hit.json){
+        base = hit.base || base;
+        const group = hit.json['class'] || hit.json['data'] || hit.json['list'] || [];
+        const arr = __pick(group);
+        for (let i=0;i<arr.length;i++){
+          const c = arr[i];
+          const id   = c.type_id || c.typeid || c.id || c.tid;
+          const name = c.type_name || c.typename || c.name || c.title;
+          if (id && name){
+            tabs.push({ name: String(name), ext: { catId: String(id), page: 1 } });
+          }
         }
       }
-    }
-  }catch(e){
-    // 忽略异常，走兜底
+    }catch(e){}
   }
 
-  // 兜底给几个常用分类，确保 UI 不空
+  // 离线兜底分类（确保 UI 稳定）
   if (!tabs.length){
     tabs = [
       { name: '电影', ext: { catId: '1', page: 1 } },
@@ -144,26 +141,23 @@ async function getConfig(){
     ];
   }
 
-  // 把探测到的 base 保存到全局，后面 getCards 用
   try{ globalThis.__RBOTV_BASE__ = base; }catch(e){}
 
   return __jsonify({
     ver: 20250905,
-    title: '热播APP',
+    title: '热播APP（离线优先）',
     site: base,
     tabs
   });
 }
 
-/* ================== 入口：getCards（已接） ================== */
+/* ================== getCards（离线优先 + 限时探测） ================== */
 async function getCards(ext){
   ext = __argsify(ext);
   const catId = (ext && ext.catId) ? String(ext.catId) : '1';
   const page  = (ext && ext.page)  ? (ext.page|0) : 1;
 
   const BASE = (typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : 'http://v.rbotv.cn';
-
-  // 常见 APP 列表接口路径
   const listRel = [
     '/xgapp.php/v3/video?tid=' + catId + '&pg=' + page,
     '/xgapp.php/v2/video/type?tid=' + catId + '&pg=' + page,
@@ -174,35 +168,56 @@ async function getCards(ext){
   ];
 
   let out = [];
-  try{
-    const hit = await __probeJSON([BASE], listRel);
-    if (hit.json){
-      const arr = hit.json['list'] || hit.json['data'] || hit.json['vod'] || hit.json['items'] || [];
-      const a = __pick(arr);
-      for (let i=0;i<a.length;i++){
-        const o = __normVodItem(a[i]);
-        if (o.vod_id && o.vod_name){
-          out.push({
-            vod_id: o.vod_id,
-            vod_name: o.vod_name,
-            vod_pic: o.vod_pic,
-            vod_remarks: o.vod_remarks,
-            ext: { id: o.vod_id } // 回传给 getTracks
-          });
+
+  if (NET_ENABLED){
+    try{
+      const hit = await __probeJSON([BASE], listRel);
+      if (hit.json){
+        const arr = hit.json['list'] || hit.json['data'] || hit.json['vod'] || hit.json['items'] || [];
+        const a = __pick(arr);
+        for (let i=0;i<a.length;i++){
+          const o = __normVodItem(a[i]);
+          if (o.vod_id && o.vod_name){
+            out.push({
+              vod_id: o.vod_id,
+              vod_name: o.vod_name,
+              vod_pic: o.vod_pic,
+              vod_remarks: o.vod_remarks,
+              ext: { id: o.vod_id }
+            });
+          }
         }
       }
-    }
-  }catch(e){
-    // 忽略异常；无数据则返回空列表
+    }catch(e){}
+  }
+
+  // 离线兜底（保证有条目，不转圈）
+  if (!out.length){
+    out = [
+      {
+        vod_id: 'demo_1',
+        vod_name: '演示影片（无网络也能展示）',
+        vod_pic: '',
+        vod_remarks: '本地演示',
+        ext: { id: 'demo_1' }
+      },
+      {
+        vod_id: 'demo_2',
+        vod_name: '演示影片2',
+        vod_pic: '',
+        vod_remarks: '本地演示',
+        ext: { id: 'demo_2' }
+      }
+    ];
   }
 
   return __jsonify({ list: out });
 }
 
-/* ================== 入口：getTracks（演示版，待你确认后再接详情） ================== */
+/* ================== getTracks（先离线演示，确认后再接详情） ================== */
 async function getTracks(ext){
   ext = __argsify(ext);
-  // 先演示固定两集，验证流程没问题后再接详情接口
+  // 此处先返回演示线路，等你确认“分类/列表稳定显示”后我再接详情接口
   return __jsonify({
     list: [{
       title: '默认线路',
@@ -214,7 +229,7 @@ async function getTracks(ext){
   });
 }
 
-/* ================== 入口：getPlayinfo（演示直链返回） ================== */
+/* ================== getPlayinfo（演示直链） ================== */
 async function getPlayinfo(ext){
   ext = __argsify(ext);
   const u = (ext && ext.raw) ? String(ext.raw) : '';
@@ -224,11 +239,10 @@ async function getPlayinfo(ext){
   });
 }
 
-/* ================== 入口：search（先返回空） ================== */
+/* ================== search（先返回空） ================== */
 async function search(ext){
   ext = __argsify(ext);
   return __jsonify({ list: [] });
 }
 
-/* ================== 导出 ================== */
 module.exports = { getConfig, getCards, getTracks, getPlayinfo, search };
