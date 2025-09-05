@@ -1,7 +1,7 @@
 // rbotv_app.js —— 离线优先 + 时间盒探测（async + jsonify + argsify；绝不停留转圈）
 
 /* ====== 开关：先离线运行，确认稳定后你再改 true 测真接口 ====== */
-const NET_ENABLED = false;        // 改成 true 才会尝试联网探测
+const NET_ENABLED = true;        // 改成 true 才会尝试联网探测
 const NET_TIMEOUT_MS = 1200;      // 每个探测的硬超时（毫秒）
 
 /* ================== 基础工具 ================== */
