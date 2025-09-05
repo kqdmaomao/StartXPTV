@@ -1,19 +1,15 @@
-// rbotv_app.js —— XPTV csp_xiaohys 全量接入（async + jsonify + argsify + 时间盒 + 兜底）
-// 接口域：v.rbotv.cn（自动探测 http/https 与多条常见路径）
-// 设计目标：联网成功→用真数据；联网失败/超时→兜底数据，页面不转圈
+// rbotv_app.js —— XPTV csp_xiaohys 全量接入 + 可视化诊断（async + jsonify + argsify + 时间盒）
+// 用法重点：在订阅里的 ext 传 {"url":"http://v.rbotv.cn"} 或其它站点根地址，脚本优先按 ext.url 探测
+// 当探测失败时，会在列表返回一张“诊断卡片”，把尝试过的接口路径展示到 UI 里，便于无需日志也能定位
 
-/* ====== 联网开关与超时（建议保持 true；如需离线演示可改为 false） ====== */
-const NET_ENABLED = true;         // 允许联网探测真实接口
-const NET_TIMEOUT_MS = 1500;      // 每个请求硬超时（毫秒）
+const NET_ENABLED   = true;    // 联网开关（保持 true：真接口 + 兜底，不会卡圈）
+const NET_TIMEOUT_MS = 1500;   // 每个请求硬超时（ms）
 
-/* ================== 通用工具 ================== */
-
-// jsonify 兜底：优先用内置 jsonify；缺失时用 JSON.stringify
+/* ================== 工具 ================== */
 const __jsonify = (typeof jsonify === 'function')
   ? jsonify
   : (o => { try { return JSON.stringify(o); } catch(e){ return '{}'; } });
 
-// 把 ext 安全解析为对象：优先用 argsify；否则自行解析
 function __argsify(x){
   try{
     if (typeof argsify === 'function') return argsify(x);
@@ -30,7 +26,6 @@ function __argsify(x){
   return {};
 }
 
-// 请求头
 function __H(extra){
   const base = {
     'User-Agent': 'Mozilla/5.0',
@@ -39,13 +34,8 @@ function __H(extra){
   if (extra) for (const k in extra) base[k] = extra[k];
   return base;
 }
+function __timeout(ms){ return new Promise(r => setTimeout(()=>r({__timeout__:true}), ms)); }
 
-// 超时器
-function __timeout(ms){
-  return new Promise(resolve => setTimeout(() => resolve({ __timeout__: true }), ms));
-}
-
-// GET 文本（$fetch 优先；否则尝试 fetch）
 async function __get(u){
   if (!NET_ENABLED) return '';
   try{
@@ -58,18 +48,13 @@ async function __get(u){
       return (r && (r.data || r.content || r.body)) || '';
     }
     if (typeof fetch === 'function'){
-      const r = await Promise.race([
-        fetch(u, { headers: __H() }),
-        __timeout(NET_TIMEOUT_MS)
-      ]);
+      const r = await Promise.race([ fetch(u, { headers: __H() }), __timeout(NET_TIMEOUT_MS) ]);
       if (!r || r.__timeout__) return '';
       return await r.text();
     }
   }catch(e){}
   return '';
 }
-
-// GET JSON
 async function __getJSON(u){
   const txt = await __get(u);
   if (!txt) return null;
@@ -77,13 +62,12 @@ async function __getJSON(u){
   return null;
 }
 
-// 多路径探测（第一个返回对象/数组就算命中）
 async function __probeJSON(bases, rels){
-  if (!NET_ENABLED) return { base: '', url: '', json: null, tried: [] };
+  if (!NET_ENABLED) return { base:'', url:'', json:null, tried: [] };
   const tried = [];
   for (let i=0;i<bases.length;i++){
     for (let k=0;k<rels.length;k++){
-      const u = bases[i] + rels[k];
+      const u = bases[i].replace(/\/+$/,'') + rels[k];
       tried.push(u);
       const j = await __getJSON(u);
       if (j && (Array.isArray(j) || typeof j === 'object')){
@@ -91,10 +75,10 @@ async function __probeJSON(bases, rels){
       }
     }
   }
-  return { base: '', url: '', json: null, tried };
+  return { base:'', url:'', json:null, tried };
 }
 
-function __pick(a){ return Array.isArray(a) ? a : []; }
+const __pick = a => Array.isArray(a) ? a : [];
 function __normVodItem(it){
   return {
     vod_id: String(it.id || it.vod_id || it.vid || it.ids || it.ID || it.video_id || ''),
@@ -104,9 +88,17 @@ function __normVodItem(it){
   };
 }
 
-/* ================== 1) getConfig：分类 ================== */
+/* ================== 1) getConfig：分类（支持 ext.url） ================== */
 async function getConfig(){
-  const BASES = ['http://v.rbotv.cn', 'https://v.rbotv.cn'];
+  // 默认候选（仅当你不传 ext.url 时才会用到）
+  let bases = ['http://v.rbotv.cn', 'https://v.rbotv.cn'];
+
+  // 如果调用方通过 ext 传了 url，这里优先使用
+  // 由于 getConfig 没有 ext 入参（引擎习惯），我们允许之前 getCards 写入全局 __RBOTV_BASE__，或在订阅就写死 site
+  if (typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__){
+    bases = [String(globalThis.__RBOTV_BASE__)];
+  }
+
   const navRel = [
     '/xgapp.php/v3/nav',
     '/xgapp.php/v2/nav',
@@ -118,22 +110,18 @@ async function getConfig(){
   ];
 
   let tabs = [];
-  let base = BASES[0];
+  let base = bases[0];
 
   if (NET_ENABLED){
     try{
-      const hit = await __probeJSON(BASES, navRel);
+      const hit = await __probeJSON(bases, navRel);
       if (hit.json){
         base = hit.base || base;
         const group = hit.json['class'] || hit.json['data'] || hit.json['list'] || [];
-        const arr = __pick(group);
-        for (let i=0;i<arr.length;i++){
-          const c = arr[i];
+        for (const c of __pick(group)){
           const id   = c.type_id || c.typeid || c.id || c.tid;
           const name = c.type_name || c.typename || c.name || c.title;
-          if (id && name){
-            tabs.push({ name: String(name), ext: { catId: String(id), page: 1 } });
-          }
+          if (id && name) tabs.push({ name: String(name), ext: { catId: String(id), page: 1 } });
         }
       }
     }catch(e){}
@@ -150,47 +138,60 @@ async function getConfig(){
 
   try{ globalThis.__RBOTV_BASE__ = base; }catch(e){}
 
-  return __jsonify({
-    ver: 20250905,
-    title: '热播APP',
-    site: base,
-    tabs
-  });
+  return __jsonify({ ver: 20250905, title: '热播APP', site: base, tabs });
 }
 
-/* ================== 2) getCards：列表 ================== */
+/* ================== 2) getCards：列表（支持 ext.url + 可视化诊断） ================== */
 async function getCards(ext){
   ext = __argsify(ext);
+
+  // 读取你传进来的 ext.url（强烈建议在订阅里传）
+  // 例： "ext": "https://.../rbotv_app.js#@{\"url\":\"http://v.rbotv.cn\"}"
+  let BASE = (ext && ext.url) ? String(ext.url) : '';
+  if (!BASE){
+    // 次选：用上一步 getConfig 写下的全局
+    BASE = (typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : '';
+  }
+  if (!BASE) BASE = 'http://v.rbotv.cn';
+
+  try{ globalThis.__RBOTV_BASE__ = BASE; }catch(e){}
+
   const catId = (ext && ext.catId) ? String(ext.catId) : '1';
   const page  = (ext && ext.page)  ? (ext.page|0) : 1;
 
-  const BASE = (typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : 'http://v.rbotv.cn';
   const listRel = [
+    // xgapp 常见
     '/xgapp.php/v3/video?tid=' + catId + '&pg=' + page,
     '/xgapp.php/v2/video/type?tid=' + catId + '&pg=' + page,
+    // app 常见
     '/api.php/app/video?tid=' + catId + '&pg=' + page,
     '/api.php/app/video?type_id=' + catId + '&page=' + page,
+    // provide
     '/api.php/provide/vod/?ac=videolist&t=' + catId + '&pg=' + page,
-    '/macapi.php/provide/vod/?ac=videolist&t=' + catId + '&pg=' + page
+    '/macapi.php/provide/vod/?ac=videolist&t=' + catId + '&pg=' + page,
+    // 其它常见
+    '/app/index.php/v1/vod/getLists?tid=' + catId + '&page=' + page,
+    '/app/index.php/v1/vod?type=' + catId + '&page=' + page
   ];
 
   let out = [];
+  let triedUrls = [];
 
   if (NET_ENABLED){
     try{
       const hit = await __probeJSON([BASE], listRel);
+      triedUrls = hit.tried || [];
       if (hit.json){
         const arr = hit.json['list'] || hit.json['data'] || hit.json['vod'] || hit.json['items'] || [];
-        const a = __pick(arr);
-        for (let i=0;i<a.length;i++){
-          const o = __normVodItem(a[i]);
+        for (const it of __pick(arr)){
+          const o = __normVodItem(it);
           if (o.vod_id && o.vod_name){
             out.push({
               vod_id: o.vod_id,
               vod_name: o.vod_name,
               vod_pic: o.vod_pic,
               vod_remarks: o.vod_remarks,
-              ext: { id: o.vod_id }
+              ext: { id: o.vod_id, url: BASE }   // 回传 getTracks，同时把 base 带上
             });
           }
         }
@@ -198,28 +199,29 @@ async function getCards(ext){
     }catch(e){}
   }
 
+  // 可视化诊断：若没有真数据，返演示 + 诊断卡片（把尝试过的接口前三条写进备注）
   if (!out.length){
+    const tip = triedUrls.length
+      ? ('探测失败(取前三)：' + triedUrls.slice(0,3).map(u=>u.replace(BASE,'')).join(' | '))
+      : '未联网或无可用接口';
     out = [
-      {
-        vod_id: 'demo_1',
-        vod_name: '演示影片（兜底）',
-        vod_pic: '',
-        vod_remarks: '本地演示',
-        ext: { id: 'demo_1' }
-      }
+      { vod_id: 'demo_1', vod_name: '演示影片（兜底）', vod_pic: '', vod_remarks: '本地演示', ext: { id: 'demo_1', url: BASE } },
+      { vod_id: 'diag',   vod_name: '【诊断提示】',      vod_pic: '', vod_remarks: tip,         ext: { id: 'diag',   url: BASE } }
     ];
   }
 
   return __jsonify({ list: out });
 }
 
-/* ================== 3) getTracks：详情/分集 ================== */
+/* ================== 3) getTracks：详情/分集（支持 ext.url + 诊断） ================== */
 async function getTracks(ext){
   ext = __argsify(ext);
-  const vid = (ext && (ext.id || ext.vod_id)) ? String(ext.id || ext.vod_id) : '';
+  const vid  = (ext && (ext.id || ext.vod_id)) ? String(ext.id || ext.vod_id) : '';
+  const BASE = (ext && ext.url) ? String(ext.url) :
+               ((typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : 'http://v.rbotv.cn');
 
-  // 离线兜底（当 id 不存在时）
-  if (!NET_ENABLED || !vid){
+  if (!NET_ENABLED || !vid || vid === 'demo_1' || vid === 'diag'){
+    // 离线兜底或诊断卡片不请求网络
     return __jsonify({
       list: [{
         title: '默认线路',
@@ -231,32 +233,31 @@ async function getTracks(ext){
     });
   }
 
-  const BASE = (typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : 'http://v.rbotv.cn';
   const detailRel = [
     '/xgapp.php/v3/detail?ids=' + vid,
     '/xgapp.php/v3/video_detail?id=' + vid,
     '/api.php/app/video_detail?id=' + vid,
     '/api.php/provide/vod/?ac=detail&ids=' + vid,
-    '/macapi.php/provide/vod/?ac=detail&ids=' + vid
+    '/macapi.php/provide/vod/?ac=detail&ids=' + vid,
+    '/app/index.php/v1/vod/detail?id=' + vid
   ];
 
   let tracksGroups = [];
+  let triedUrls = [];
 
   try{
     const hit = await __probeJSON([BASE], detailRel);
+    triedUrls = hit.tried || [];
     const J = hit.json;
 
     if (J){
-      // 兼容不同返回结构
-      // 常见：{ list: [ { vod_play_url: "线路1$u1#线路1-2$u2$$线路2$u3#..." , vod_play_from:"线路1$$线路2" } ] }
-      // 也可能：{ data: { play: [ { name:"线路1", urls:[{n:"第1集",u:"..."}]} ] } }
       let item = null;
       if (Array.isArray(J.list) && J.list.length > 0) item = J.list[0];
       else if (J.data && Array.isArray(J.data) && J.data.length > 0) item = J.data[0];
       else if (J.data && typeof J.data === 'object') item = J.data;
 
       if (item){
-        // 1) vod_play_from + vod_play_url 形式
+        // 1) from+url 组合
         let playFrom = (item.vod_play_from || item.from || item.play_from || '').split('$$').filter(Boolean);
         let playUrl  = (item.vod_play_url  || item.url  || item.play_url  || '').split('$$').filter(Boolean);
 
@@ -264,7 +265,6 @@ async function getTracks(ext){
           for (let i=0;i<playFrom.length;i++){
             const tname = playFrom[i] || ('线路' + (i+1));
             const block = playUrl[i] || '';
-            // 形如：  第1集$xxx.m3u8#第2集$yyy.m3u8
             const parts = block.split('#').filter(Boolean);
             const one = [];
             for (let j=0;j<parts.length;j++){
@@ -273,24 +273,17 @@ async function getTracks(ext){
               if (idx > -1){
                 const n = seg.slice(0, idx).trim() || ('第' + (j+1) + '集');
                 const u = seg.slice(idx+1).trim();
-                if (u){
-                  one.push({ name: n, pan: '', ext: { raw: u } });
-                }
+                if (u){ one.push({ name: n, pan: '', ext: { raw: u } }); }
               }else{
-                // 没有 $，当作 URL
                 const u = seg.trim();
-                if (u){
-                  one.push({ name: '第' + (j+1) + '集', pan: '', ext: { raw: u } });
-                }
+                if (u){ one.push({ name: '第' + (j+1) + '集', pan: '', ext: { raw: u } }); }
               }
             }
-            if (one.length){
-              tracksGroups.push({ title: tname, tracks: one });
-            }
+            if (one.length){ tracksGroups.push({ title: tname, tracks: one }); }
           }
         }
 
-        // 2) play 列表结构
+        // 2) 列表结构
         if (!tracksGroups.length && item.play && Array.isArray(item.play)){
           for (let k=0;k<item.play.length;k++){
             const p = item.play[k];
@@ -303,20 +296,14 @@ async function getTracks(ext){
               const u = uo.u || uo.url  || '';
               if (u) one.push({ name: n, pan: '', ext: { raw: u } });
             }
-            if (one.length){
-              tracksGroups.push({ title: tname, tracks: one });
-            }
+            if (one.length){ tracksGroups.push({ title: tname, tracks: one }); }
           }
         }
 
-        // 3) 兜底：若发现直接有 m3u8/url
         if (!tracksGroups.length){
           const maybe = item.playUrl || item.url || item.vod_url || '';
           if (maybe){
-            tracksGroups.push({
-              title: '默认线路',
-              tracks: [{ name: '播放', pan: '', ext: { raw: String(maybe) } }]
-            });
+            tracksGroups.push({ title: '默认线路', tracks: [{ name: '播放', pan: '', ext: { raw: String(maybe) } }] });
           }
         }
       }
@@ -324,57 +311,49 @@ async function getTracks(ext){
   }catch(e){}
 
   if (!tracksGroups.length){
-    // 兜底不让页面空
+    const tip = triedUrls.length
+      ? ('详情探测失败(取前三)：' + triedUrls.slice(0,3).map(u=>u.replace(BASE,'')).join(' | '))
+      : '未联网或无可用详情接口';
     tracksGroups = [{
-      title: '默认线路',
-      tracks: [
-        { name: '第1集', pan: '', ext: { raw: 'https://example.com/video1.m3u8' } }
-      ]
+      title: '诊断',
+      tracks: [{ name: tip, pan: '', ext: { raw: '' } }]
     }];
   }
 
   return __jsonify({ list: tracksGroups });
 }
 
-/* ================== 4) getPlayinfo：返回可播直链/或交给壳嗅探 ================== */
+/* ================== 4) getPlayinfo：直链/嗅探 ================== */
 async function getPlayinfo(ext){
   ext = __argsify(ext);
   const u = (ext && ext.raw) ? String(ext.raw) : '';
-
-  // 简单判断直链（m3u8/mp4）；其他交给壳的解析器
   const isDirect = /\.(m3u8|mp4|m4a)(\?|$)/i.test(u);
-  if (isDirect){
-    return __jsonify({
-      urls: [u],
-      headers: [{ 'User-Agent': 'Mozilla/5.0' }]
-    });
-  }else{
-    // 让壳自行嗅探/解析
-    return __jsonify({
-      urls: [u],
-      headers: [{ 'User-Agent': 'Mozilla/5.0' }]
-    });
-  }
+  return __jsonify({
+    urls: u ? [u] : [],
+    headers: [{ 'User-Agent': 'Mozilla/5.0' }],
+    // isDirect 可留作你自己判断用；壳一般会自行嗅探
+    direct: isDirect ? 1 : 0
+  });
 }
 
-/* ================== 5) search：多路径探测（失败则空列表） ================== */
+/* ================== 5) search：多路径探测（支持 ext.url） ================== */
 async function search(ext){
   ext = __argsify(ext);
   const wd = (ext && (ext.wd || ext.key || ext.keyword)) ? String(ext.wd || ext.key || ext.keyword) : '';
   const page = (ext && ext.page) ? (ext.page|0) : 1;
 
-  if (!NET_ENABLED || !wd){
-    return __jsonify({ list: [] });
-  }
+  if (!NET_ENABLED || !wd) return __jsonify({ list: [] });
 
-  const BASE = (typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : 'http://v.rbotv.cn';
+  const BASE = (ext && ext.url) ? String(ext.url) :
+               ((typeof globalThis !== 'undefined' && globalThis.__RBOTV_BASE__) ? globalThis.__RBOTV_BASE__ : 'http://v.rbotv.cn');
   const q = encodeURIComponent(wd);
 
   const searchRel = [
     '/xgapp.php/v3/search?text=' + q + '&pg=' + page,
     '/api.php/app/search?text=' + q + '&pg=' + page,
     '/api.php/provide/vod/?ac=videolist&wd=' + q + '&pg=' + page,
-    '/macapi.php/provide/vod/?ac=videolist&wd=' + q + '&pg=' + page
+    '/macapi.php/provide/vod/?ac=videolist&wd=' + q + '&pg=' + page,
+    '/app/index.php/v1/vod/search?wd=' + q + '&page=' + page
   ];
 
   let out = [];
@@ -382,16 +361,15 @@ async function search(ext){
     const hit = await __probeJSON([BASE], searchRel);
     if (hit.json){
       const arr = hit.json['list'] || hit.json['data'] || hit.json['vod'] || hit.json['items'] || [];
-      const a = __pick(arr);
-      for (let i=0;i<a.length;i++){
-        const o = __normVodItem(a[i]);
+      for (const it of __pick(arr)){
+        const o = __normVodItem(it);
         if (o.vod_id && o.vod_name){
           out.push({
             vod_id: o.vod_id,
             vod_name: o.vod_name,
             vod_pic: o.vod_pic,
             vod_remarks: o.vod_remarks,
-            ext: { id: o.vod_id }
+            ext: { id: o.vod_id, url: BASE }
           });
         }
       }
